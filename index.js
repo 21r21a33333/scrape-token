@@ -1,66 +1,94 @@
 const puppeteer = require('puppeteer');
 const { JSDOM } = require('jsdom');
+const fs = require('fs');
+const path = require('path');
+
 (async () => {
-    // Launch the browser
     const browser = await puppeteer.launch();
     const page = await browser.newPage();
+    const transactions = [];
+    const baseUrl = 'https://app.thoryield.com/transactions?page=';
 
-    // Go to the specified URL
-    await page.goto('https://app.thoryield.com/transactions?page=1&pool=BTC.BTC&type=swap', {
-        waitUntil: 'networkidle2'
-    });
+    let currentPage = 1;
 
-    // Wait for the specific class to be loaded
-    await page.waitForSelector('.sc-eTpRJs.jpIzVy.css-4cffwv');
-    // Get the content of all elements with the specified class
-    const contents = await page.evaluate(() => {
-        // class="sc-ugnQR hYpnlV"
-        const elements = Array.from(document.querySelectorAll('.sc-ugnQR.hYpnlV'));
-        return elements.map(element => element.innerHTML); // Return an array of inner HTMLs
-    });
+    while (true) {
+        console.log(`Loading page ${currentPage}...`);
+        await page.goto(`${baseUrl}${currentPage}&pool=BTC.BTC&type=swap`, {
+            waitUntil: 'networkidle2'
+        });
 
-    // Log each content to the console
-    contents.forEach((content, index) => {
-        const htmlString = content     // Parse the HTML string
-        // Parse the HTML string
+        await page.waitForSelector('.sc-eTpRJs.jpIzVy.css-4cffwv');
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for 5 seconds
+        const contents = await page.evaluate(() => {
+            const elements = Array.from(document.querySelectorAll('.sc-ugnQR.hYpnlV'));
+            return elements.map(element => element.innerHTML);
+        });
 
-        // Parse the HTML string
-        const dom = new JSDOM(htmlString);
-        const doc = dom.window.document;
+        let foundRecentTransaction = false; // Flag to check for recent transactions
 
-        // Extract data with safety checks
-        const transactionLinkElement = doc.querySelector('.sc-eTpRJs a');
-        const transactionLink = transactionLinkElement ? transactionLinkElement.outerHTML : null;
+        contents.forEach((content) => {
+            const dom = new JSDOM(content);
+            const doc = dom.window.document;
 
-        const elements = doc.querySelectorAll('.sc-eTpRJs.jpIzVy.css-1n3zwju');
-        const inToken = elements[1] ? elements[1].textContent.trim() : null;
-        const outToken = elements[2] ? elements[2].textContent.trim() : null;
+            const transactionLinkElement = doc.querySelector('.sc-eTpRJs a');
+            const transactionLink = transactionLinkElement ? transactionLinkElement.outerHTML : null;
+            const elements = doc.querySelectorAll('.sc-eTpRJs.jpIzVy.css-1n3zwju');
 
-        const totalValueElement = doc.querySelector('.sc-eTpRJs.css-4cffwv');
-        const totalValue = totalValueElement ? totalValueElement.textContent.trim() : null;
+            const inToken = elements[1] ? elements[1].textContent.trim() : null;
+            const outToken = elements[2] ? elements[2].textContent.trim() : null;
 
-        const tokenAmounts = doc.querySelectorAll('.sc-eTpRJs.css-4cffwv');
-        const tokenAmount1 = tokenAmounts[1] ? tokenAmounts[1].childNodes[0].textContent.trim() + ' ' + doc.querySelectorAll('.sc-hZSUBg.jwNVwE')[0]?.textContent.trim() : null;
-        const tokenAmount2 = tokenAmounts[2] ? tokenAmounts[2].childNodes[0].textContent.trim() + ' ' + doc.querySelectorAll('.sc-hZSUBg.jwNVwE')[1]?.textContent.trim() : null;
+            const totalValueElement = doc.querySelector('.sc-eTpRJs.css-4cffwv');
+            const totalValue = totalValueElement ? totalValueElement.textContent.trim() : null;
 
-        const timeElement = tokenAmounts[3];
-        const time = timeElement ? timeElement.textContent.trim() : null;
+            const tokenAmounts = doc.querySelectorAll('.sc-eTpRJs.css-4cffwv');
+            const tokenAmount1 = tokenAmounts[1] ? tokenAmounts[1].childNodes[0].textContent.trim() + ' ' + doc.querySelectorAll('.sc-hZSUBg.jwNVwE')[0]?.textContent.trim() : null;
+            const tokenAmount2 = tokenAmounts[2] ? tokenAmounts[2].childNodes[0].textContent.trim() + ' ' + doc.querySelectorAll('.sc-hZSUBg.jwNVwE')[1]?.textContent.trim() : null;
 
-        const transactionDetails = {
-            transactionLink: transactionLink,
-            in: inToken,
-            out: outToken,
-            totalValue: totalValue,
-            tokenAmount1: tokenAmount1,
-            tokenAmount2: tokenAmount2,
-            time: time
-        };
+            const timeElement = tokenAmounts[3];
+            const time = timeElement ? timeElement.textContent.trim() : null;
 
-        console.log(transactionDetails);
-        console.log('-----------------------------');
+            const transactionDate = new Date(time);
+            const last30Days = new Date();
+            last30Days.setHours(last30Days.getHours() - 2);
+            // last30Days.setDate(last30Days.getDate() - 30);
 
-    });
+            if (transactionDate >= last30Days) {
+                foundRecentTransaction = true; // Mark that we found a recent transaction
+                transactions.push({
+                    transactionLink,
+                    in: inToken,
+                    out: outToken,
+                    totalValue,
+                    tokenAmount1,
+                    tokenAmount2,
+                    time
+                });
+            }
+        });
 
-    // Close the browser
+        // Stop if no recent transactions were found on this page
+        if (!foundRecentTransaction) {
+            break;
+        }
+
+        currentPage++;
+    }
+
+    const csvContent = [
+        'Transaction Link,In,Out,Total Value,Token Amount 1,Token Amount 2,Time',
+        ...transactions.map(tx => [
+            tx.transactionLink,
+            tx.in,
+            tx.out,
+            tx.totalValue,
+            tx.tokenAmount1,
+            tx.tokenAmount2,
+            tx.time
+        ].join(','))
+    ].join('\n');
+
+    fs.writeFileSync(path.join(__dirname, 'transactions.csv'), csvContent);
+    console.log('CSV file has been created: transactions.csv');
+
     await browser.close();
 })();
